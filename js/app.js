@@ -102,16 +102,34 @@ const defaultSettings = () => ({
 
 let S = null;
 S = load();
+/* Lengkapi data lama/backup lama dengan nilai bawaan — hanya MENAMBAH field yang hilang, tidak menghapus/mengubah isi */
+function normalizeData(s) {
+  s.settings = { ...defaultSettings(), ...(s.settings || {}) };
+  s.closings ||= {}; s.drafts ||= {}; s.storeClosed ||= {}; s.meta ||= {};
+  for (const [k, c] of Object.entries(s.closings)) {
+    if (!c || typeof c !== 'object') { delete s.closings[k]; continue; }
+    c.date ||= k;
+    c.income ||= {};
+    c.expenses = Array.isArray(c.expenses) ? c.expenses : [];
+    c.revisions = Array.isArray(c.revisions) ? c.revisions : [];
+    c.pic ??= '-';
+  }
+  for (const d of Object.values(s.drafts)) {
+    if (!d || typeof d !== 'object') continue;
+    d.income ||= {}; d.denoms ||= {};
+    d.expenses = Array.isArray(d.expenses) ? d.expenses : [];
+  }
+  return s;
+}
 function load() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) {
-      const s = JSON.parse(raw);
-      s.settings = { ...defaultSettings(), ...s.settings };
-      s.closings ||= {}; s.drafts ||= {}; s.storeClosed ||= {};
-      return s;
+  const raw = localStorage.getItem(STORE_KEY);
+  if (raw) {
+    try { return normalizeData(JSON.parse(raw)); }
+    catch (e) {
+      // jangan timpa data yang gagal dibaca — simpan salinannya dulu
+      try { localStorage.setItem(`${STORE_KEY}.rusak-${Date.now()}`, raw); } catch (_) { /* abaikan */ }
     }
-  } catch (e) { /* abaikan */ }
+  }
   return seed();
 }
 function save() {
@@ -431,28 +449,56 @@ function closingRow(c) {
     <div class="end">${isOwner ? `<b class="num">${rp(t.income)}</b><small class="out num">−${rpShort(t.expense)}</small>` : ic('right', 'sm')}</div></a>`;
 }
 
-function barChart(keys, { height = 120, labels = 'auto' } = {}) {
-  const W = 320, H = height, pb = 16, n = keys.length;
-  const data = keys.map(k => { const c = S.closings[k]; return c ? totals(c) : null; });
+/* group: 'day' | 'week' | 'month' — rentang panjang dikelompokkan agar grafik tetap terbaca */
+function barChart(keys, { height = 120, labels = 'auto', group = 'day' } = {}) {
+  let buckets;
+  if (group === 'day') {
+    buckets = keys.map(k => ({
+      keys: [k], title: fDateShort(k),
+      label: labels === 'dow' ? dateOf(k).toLocaleDateString('id-ID', { weekday: 'short' }) : String(dateOf(k).getDate()),
+    }));
+  } else {
+    const map = new Map();
+    for (const k of keys) {
+      const d = dateOf(k);
+      let id, label, title;
+      if (group === 'week') {
+        id = addDays(k, -((d.getDay() + 6) % 7)); // Senin
+        const m = dateOf(id);
+        label = `${m.getDate()}/${m.getMonth() + 1}`;
+        title = `Minggu mulai ${fDate(id, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      } else {
+        id = k.slice(0, 7);
+        label = d.toLocaleDateString('id-ID', { month: 'short' }) + (d.getMonth() === 0 ? ` '${String(d.getFullYear()).slice(2)}` : '');
+        title = fMonth(d.getFullYear(), d.getMonth());
+      }
+      if (!map.has(id)) map.set(id, { keys: [], label, title });
+      map.get(id).keys.push(k);
+    }
+    buckets = [...map.values()];
+  }
+  const data = buckets.map(b => {
+    let has = false, income = 0, expense = 0;
+    for (const k of b.keys) { const c = S.closings[k]; if (c) { has = true; const t = totals(c); income += t.income; expense += t.expense; } }
+    return has ? { income, expense } : null;
+  });
+  const W = 320, H = height, pb = 16, n = buckets.length;
   const max = Math.max(1, ...data.map(t => t ? Math.max(t.income, t.expense) : 0));
   const slot = W / n, bw = Math.max(2, Math.min(14, slot * .34));
   let g = '';
   data.forEach((t, i) => {
     const x = i * slot + slot / 2;
+    const tt = esc(buckets[i].title);
     if (t) {
       const hi = (t.income / max) * (H - pb - 4), he = (t.expense / max) * (H - pb - 4);
-      g += `<rect x="${x - bw - 1}" y="${H - pb - hi}" width="${bw}" height="${hi}" rx="2" fill="var(--in)"><title>${fDateShort(keys[i])}: masuk ${rp(t.income)}</title></rect>`;
-      g += `<rect x="${x + 1}" y="${H - pb - he}" width="${bw}" height="${he}" rx="2" fill="var(--out)" opacity=".8"><title>${fDateShort(keys[i])}: keluar ${rp(t.expense)}</title></rect>`;
+      g += `<rect x="${x - bw - 1}" y="${H - pb - hi}" width="${bw}" height="${hi}" rx="2" fill="var(--in)"><title>${tt}: masuk ${rp(t.income)}</title></rect>`;
+      g += `<rect x="${x + 1}" y="${H - pb - he}" width="${bw}" height="${he}" rx="2" fill="var(--out)" opacity=".8"><title>${tt}: keluar ${rp(t.expense)}</title></rect>`;
     } else {
       g += `<rect x="${x - 3}" y="${H - pb - 3}" width="6" height="3" rx="1.5" fill="var(--line)"/>`;
     }
     const step = Math.ceil(n / 8);
     const show = labels === 'dow' || n <= 10 || (i % step === 0 && n - 1 - i >= step / 2) || i === n - 1;
-    if (show) {
-      const d = dateOf(keys[i]);
-      const lb = labels === 'dow' ? d.toLocaleDateString('id-ID', { weekday: 'short' }) : d.getDate();
-      g += `<text x="${x}" y="${H - 3}" text-anchor="middle">${lb}</text>`;
-    }
+    if (show) g += `<text x="${x}" y="${H - 3}" text-anchor="middle">${esc(buckets[i].label)}</text>`;
   });
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafik pemasukan dan pengeluaran harian">
     <line x1="0" x2="${W}" y1="${H - pb}" y2="${H - pb}" stroke="var(--line)"/>${g}</svg>
@@ -975,7 +1021,42 @@ function detailView(date) {
 }
 
 /* ================= LAPORAN ================= */
+// Pilihan periode hanya disimpan di memori — tidak mengubah struktur data/backup JSON
 let period = '30';
+let customRange = { start: '', end: '' };
+const PERIODS = [['7', '7 hari'], ['30', '30 hari'], ['bulan', 'Bulan ini'], ['lalu', 'Bulan lalu'], ['3b', '3B'], ['6b', '6B'], ['1t', '1 Tahun'], ['kustom', 'Pilih tanggal']];
+const MAX_RANGE_DAYS = 1100; // ±3 tahun, menjaga laporan tetap ringan
+function monthsBack(today, m) {
+  const td = dateOf(today);
+  const y = td.getFullYear(), mo = td.getMonth() - m;
+  const dim = new Date(y, mo + 1, 0).getDate(); // jumlah hari di bulan tujuan
+  return addDays(keyOf(new Date(y, mo, Math.min(td.getDate(), dim))), 1);
+}
+function periodRange(p, today) {
+  const td = dateOf(today);
+  switch (p) {
+    case '7': case '30': return [addDays(today, -(+p - 1)), today];
+    case 'bulan': return [keyOf(new Date(td.getFullYear(), td.getMonth(), 1)), today];
+    case 'lalu': return [keyOf(new Date(td.getFullYear(), td.getMonth() - 1, 1)), keyOf(new Date(td.getFullYear(), td.getMonth(), 0))];
+    case '3b': return [monthsBack(today, 3), today];
+    case '6b': return [monthsBack(today, 6), today];
+    case '1t': return [monthsBack(today, 12), today];
+    default: {
+      const valid = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+      let s = valid(customRange.start) ? customRange.start : addDays(today, -29);
+      let e = valid(customRange.end) ? customRange.end : today;
+      if (e > today) e = today;
+      if (s > e) [s, e] = [e, s];
+      if (daysBetween(s, e) > MAX_RANGE_DAYS) s = addDays(e, -MAX_RANGE_DAYS);
+      return [s, e];
+    }
+  }
+}
+function keysBetween(s, e) {
+  const out = [];
+  for (let k = s; k <= e; k = addDays(k, 1)) out.push(k);
+  return out;
+}
 routes.laporan = () => {
   if (S.settings.role !== 'owner') {
     return {
@@ -985,26 +1066,23 @@ routes.laporan = () => {
     };
   }
   const today = bizToday();
-  const td = dateOf(today);
-  let keys = [];
-  if (period === '7' || period === '30') keys = [...Array(+period)].map((_, i) => addDays(today, i - (+period - 1)));
-  else {
-    const off = period === 'bulan' ? 0 : -1;
-    const first = new Date(td.getFullYear(), td.getMonth() + off, 1);
-    const last = off === 0 ? td : new Date(td.getFullYear(), td.getMonth(), 0);
-    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) keys.push(keyOf(d));
-  }
+  const [rStart, rEnd] = periodRange(period, today);
+  const keys = keysBetween(rStart, rEnd);
+  const group = keys.length <= 45 ? 'day' : keys.length <= 200 ? 'week' : 'month';
+  const groupLbl = { day: 'harian', week: 'mingguan', month: 'bulanan' }[group];
   const cs = keys.map(k => S.closings[k]).filter(Boolean);
   const agg = { i: 0, e: 0, diff: 0, minus: 0, trx: 0, late: 0, ch: {}, cat: {}, items: {} };
   for (const c of cs) {
     const t = totals(c);
     agg.i += t.income; agg.e += t.expense; agg.diff += t.diff; if (t.diff < 0) agg.minus += t.diff;
     agg.trx += +c.trx || 0; if (c.late) agg.late++;
-    for (const ch of c.channels || S.settings.channels) agg.ch[ch.name] = (agg.ch[ch.name] || 0) + (+c.income[ch.id] || 0);
-    for (const e of c.expenses) {
-      agg.cat[e.cat] = (agg.cat[e.cat] || 0) + e.amount;
-      const nk = e.name.toLowerCase();
-      agg.items[nk] ||= { name: e.name, n: 0, sum: 0 }; agg.items[nk].n++; agg.items[nk].sum += e.amount;
+    for (const ch of c.channels || S.settings.channels) agg.ch[ch.name] = (agg.ch[ch.name] || 0) + (+c.income?.[ch.id] || 0);
+    for (const e of c.expenses || []) {
+      const amt = +e.amount || 0;
+      agg.cat[e.cat] = (agg.cat[e.cat] || 0) + amt;
+      const nm = String(e.name || '-');
+      const nk = nm.toLowerCase();
+      agg.items[nk] ||= { name: nm, n: 0, sum: 0 }; agg.items[nk].n++; agg.items[nk].sum += amt;
     }
   }
   const profit = agg.i - agg.e;
@@ -1017,12 +1095,15 @@ routes.laporan = () => {
       <div class="track"><i style="width:${v / ent[0][1] * 100}%;background:${colorFn(k)}"></i></div></div>`).join('')}</div>`;
   };
   const topItems = Object.values(agg.items).sort((a, b) => b.sum - a.sum).slice(0, 5);
-  const periods = [['7', '7 hari'], ['30', '30 hari'], ['bulan', 'Bulan ini'], ['lalu', 'Bulan lalu']];
   return {
     top: '<h1>Laporan</h1>',
     html: `
-      <div class="seg" id="perSeg">${periods.map(([k, l]) => `<button data-per="${k}" class="${period === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <small class="muted center">${fDate(keys[0], { day: 'numeric', month: 'short' })} – ${fDate(keys[keys.length - 1], { day: 'numeric', month: 'short', year: 'numeric' })} · ${cs.length} dari ${keys.length} hari tercatat</small>
+      <div class="scroll-x" id="perChips">${PERIODS.map(([k, l]) => `<button class="chip ${period === k ? 'on' : ''}" data-per="${k}">${k === 'kustom' ? ic('clock', 'xs') + ' ' : ''}${l}</button>`).join('')}</div>
+      <section class="card range-card">
+        <label class="field"><span>Tanggal mulai</span><input type="date" id="rStart" value="${rStart}" max="${today}"></label>
+        <label class="field"><span>Tanggal akhir</span><input type="date" id="rEnd" value="${rEnd}" max="${today}"></label>
+      </section>
+      <small class="muted center">${fDate(rStart, { day: 'numeric', month: 'short', year: 'numeric' })} – ${fDate(rEnd, { day: 'numeric', month: 'short', year: 'numeric' })} · ${cs.length} dari ${keys.length} hari tercatat</small>
       <div class="kpis">
         <div class="kpi"><small>Pemasukan</small><b class="num in">${rp(agg.i)}</b></div>
         <div class="kpi"><small>Pengeluaran</small><b class="num out">${rp(agg.e)}</b></div>
@@ -1031,14 +1112,29 @@ routes.laporan = () => {
         <div class="kpi"><small>Selisih kas (net)</small><b class="num ${agg.diff < 0 ? 'out' : ''}">${rpSigned(agg.diff)}</b><span class="delta out">Kurang total ${rp(-agg.minus)}</span></div>
         <div class="kpi"><small>Kepatuhan closing</small><b class="num">${cs.length - agg.late}/${cs.length}</b><span class="delta ${missing.length ? 'out' : 'muted'}">${agg.late} susulan · ${missing.length} kosong</span></div>
       </div>
-      <section class="card"><h3>Pemasukan vs pengeluaran harian</h3>${barChart(keys, { height: 140 })}</section>
+      <section class="card"><h3>Pemasukan vs pengeluaran ${groupLbl}</h3>${barChart(keys, { height: 140, group })}</section>
       <section class="card"><h3>Pengeluaran per kategori</h3>${hbars(agg.cat, catColor, k => catOf(k).name) || '<div class="empty">Tidak ada data</div>'}</section>
       <section class="card"><h3>Pemasukan per kanal</h3>${hbars(agg.ch, () => 'var(--in)')}</section>
       <section class="card tight"><h3 style="padding:12px 16px 0">Pengeluaran terbesar</h3>
         ${topItems.map(it => `<div class="exp-item"><div class="grow"><b>${esc(it.name)}</b><small>${it.n}× dicatat</small></div><b class="num out">${rp(it.sum)}</b></div>`).join('') || '<div class="empty">Tidak ada data</div>'}</section>
       <button class="btn block" id="csvBtn">${ic('download', 'sm')} Unduh CSV (Excel)</button>`,
     mount: root => {
-      $$('[data-per]', root).forEach(b => b.onclick = () => { period = b.dataset.per; render(); });
+      $$('[data-per]', root).forEach(b => b.onclick = () => {
+        period = b.dataset.per;
+        if (period === 'kustom') customRange = { start: rStart, end: rEnd }; // mulai dari rentang yang sedang tampil
+        render();
+      });
+      const onDate = () => {
+        const s = $('#rStart', root).value, e = $('#rEnd', root).value;
+        if (!s || !e) return;
+        if (s > e) toast('Tanggal mulai melewati tanggal akhir — urutan ditukar');
+        if (daysBetween(s < e ? s : e, s < e ? e : s) > MAX_RANGE_DAYS) toast('Rentang maksimal ±3 tahun');
+        period = 'kustom'; customRange = { start: s, end: e }; render();
+      };
+      $('#rStart', root).onchange = onDate;
+      $('#rEnd', root).onchange = onDate;
+      const on = $('#perChips .chip.on', root);
+      if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
       $('#csvBtn', root).onclick = () => exportCSV(cs, keys);
     },
   };
@@ -1111,7 +1207,7 @@ routes.pengaturan = () => {
       $('#bkBtn', root).onclick = () => { downloadBackup(); markBackup(); toast('Backup diunduh'); };
       $('#rsFile', root).onchange = async e => {
         const f = e.target.files[0]; if (!f) return;
-        try { const d = JSON.parse(await f.text()); if (!d.closings) throw 0; S = d; save(); toast('Data dipulihkan'); render(); }
+        try { const d = JSON.parse(await f.text()); if (!d || typeof d.closings !== 'object') throw 0; S = normalizeData(d); save(); toast('Data dipulihkan'); render(); }
         catch { toast('File backup tidak valid'); }
       };
       $('#seedBtn', root).onclick = async () => { if (await confirmBox('Isi ulang data demo?', 'Semua data saat ini akan diganti dengan data contoh 2 bulan.', 'Isi ulang', { danger: true })) { S = seed(); save(); toast('Data demo dimuat'); location.hash = '#/'; } };

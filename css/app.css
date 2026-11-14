@@ -299,6 +299,9 @@ main.view { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 
+.range-card { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; }
+.range-card .field > span { font-size: 12px; color: var(--muted); }
+.range-card input[type=date] { min-height: 44px; padding: 8px 10px; font-weight: 600; font-size: 14px; min-width: 0; }
 .month-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .month-nav b { font-size: 16px; }
 
